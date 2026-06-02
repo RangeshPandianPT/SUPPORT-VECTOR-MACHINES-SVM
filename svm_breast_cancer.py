@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
@@ -10,6 +10,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.decomposition import PCA
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, confusion_matrix
+import optuna
+import joblib
 
 def main():
     # 1. Load and preprocess data
@@ -35,19 +37,39 @@ def main():
         score = pipeline.score(X_test, y_test)
         print(f"{name} Accuracy: {score:.4f}")
 
-    # 3. SVM Hyperparameter Tuning with GridSearchCV
-    print("\n--- SVM Hyperparameter Tuning ---")
-    param_grid = {
-        'classifier__C': [0.1, 1, 10], 
-        'classifier__gamma': ['scale', 0.01, 0.1, 1],
-        'classifier__kernel': ['rbf', 'linear']
-    }
-    svm_pipeline = Pipeline([('scaler', StandardScaler()), ('classifier', SVC(random_state=42))])
-    grid = GridSearchCV(svm_pipeline, param_grid, cv=5, n_jobs=-1)
-    grid.fit(X_train, y_train)
+    # 3. SVM Hyperparameter Tuning with Optuna
+    print("\n--- SVM Hyperparameter Tuning with Optuna ---")
+    
+    def objective(trial):
+        C = trial.suggest_float('C', 0.01, 100, log=True)
+        gamma = trial.suggest_categorical('gamma', ['scale', 'auto', 0.01, 0.1, 1])
+        kernel = trial.suggest_categorical('kernel', ['rbf', 'linear'])
+        
+        clf = Pipeline([
+            ('scaler', StandardScaler()),
+            ('classifier', SVC(C=C, gamma=gamma, kernel=kernel, random_state=42))
+        ])
+        
+        score = cross_val_score(clf, X_train, y_train, cv=5).mean()
+        return score
 
-    print("Best parameters:", grid.best_params_)
-    best_model = grid.best_estimator_
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=20) # 20 trials for speed
+
+    print("\nBest parameters from Optuna:", study.best_params)
+    
+    # Train best model
+    best_params = study.best_params
+    best_model = Pipeline([
+        ('scaler', StandardScaler()),
+        ('classifier', SVC(C=best_params['C'], gamma=best_params['gamma'], kernel=best_params['kernel'], random_state=42, probability=True))
+    ])
+    
+    best_model.fit(X_train, y_train)
+
+    # Save the model
+    joblib.dump(best_model, 'best_svm_model.pkl')
+    print("Saved best_svm_model.pkl")
 
     # 4. Evaluation and Confusion Matrix
     print("\n--- Best Model Evaluation ---")
@@ -68,18 +90,16 @@ def main():
 
     # 5. PCA and Decision Boundary Visualization
     print("\n--- Generating Decision Boundaries ---")
-    # Need to scale and PCA for visualization
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     pca = PCA(n_components=2)
     X_pca = pca.fit_transform(X_scaled)
 
-    # Train simplified models for 2D visualization
     svm_linear = SVC(kernel='linear', C=1.0).fit(X_pca, y)
     svm_rbf = SVC(kernel='rbf', C=1.0, gamma='scale').fit(X_pca, y)
 
     def plot_decision_boundary(model, X, y, title, filename):
-        h = .02  # step size in the mesh
+        h = .02
         x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
         y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
         xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
@@ -94,7 +114,6 @@ def main():
         plt.ylabel('Principal Component 2')
         plt.title(title)
         
-        # create legend
         handles, labels = scatter.legend_elements()
         if len(handles) > 0:
             plt.legend(handles, ['Benign', 'Malignant'][:len(handles)])
