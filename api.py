@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import pandas as pd
@@ -7,6 +8,15 @@ import numpy as np
 app = FastAPI(title="Breast Cancer SVM Prediction API", 
               description="A REST API to predict whether a breast tumor is benign or malignant using a trained SVM model.",
               version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # For development, allow all
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # Load the trained model
 try:
