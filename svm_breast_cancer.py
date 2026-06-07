@@ -12,6 +12,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report, confusion_matrix
 import optuna
 import joblib
+import mlflow
+import mlflow.sklearn
 
 def main():
     # 1. Load and preprocess data
@@ -67,16 +69,25 @@ def main():
     
     best_model.fit(X_train, y_train)
 
-    # Save the model
+    # Save the model locally
     joblib.dump(best_model, 'best_svm_model.pkl')
     print("Saved best_svm_model.pkl")
 
     # 4. Evaluation and Confusion Matrix
     print("\n--- Best Model Evaluation ---")
     y_pred = best_model.predict(X_test)
+    report = classification_report(y_test, y_pred, output_dict=True)
     print(classification_report(y_test, y_pred))
 
-    # Plot and save Confusion Matrix
+    # Log with MLflow
+    mlflow.set_experiment("Breast_Cancer_SVM_Optuna")
+    with mlflow.start_run(run_name="Best_Model"):
+        mlflow.log_params(best_params)
+        mlflow.log_metric("accuracy", report["accuracy"])
+        mlflow.log_metric("f1_macro", report["macro avg"]["f1-score"])
+        mlflow.sklearn.log_model(best_model, "svm_model")
+        
+        # Plot and save Confusion Matrix
     plt.figure(figsize=(6, 4))
     cm = confusion_matrix(y_test, y_pred)
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Benign', 'Malignant'], yticklabels=['Benign', 'Malignant'])
@@ -85,6 +96,7 @@ def main():
     plt.ylabel('Actual')
     plt.tight_layout()
     plt.savefig('confusion_matrix.png')
+    mlflow.log_artifact('confusion_matrix.png')
     print("Saved confusion_matrix.png")
     plt.close()
 
@@ -120,6 +132,7 @@ def main():
             
         plt.tight_layout()
         plt.savefig(filename)
+        mlflow.log_artifact(filename)
         print(f"Saved {filename}")
         plt.close()
 
