@@ -12,3 +12,4 @@ joblib
 pytest
 httpx
 mlflow
+python-multipart
