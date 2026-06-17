@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
+
+const API_URL = 'http://localhost:8000'
 
 const initialFeatures = {
   radius_mean: '', texture_mean: '', perimeter_mean: '', area_mean: '', smoothness_mean: '', compactness_mean: '', concavity_mean: '', concave_points_mean: '', symmetry_mean: '', fractal_dimension_mean: '',
@@ -19,12 +21,23 @@ const mockBenign = {
 }
 
 function App() {
+  const [activeTab, setActiveTab] = useState('live')
+  
+  // Live Prediction State
   const [features, setFeatures] = useState(initialFeatures)
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
+  const [liveLoading, setLiveLoading] = useState(false)
+  const [liveResult, setLiveResult] = useState(null)
+  const [liveError, setLiveError] = useState(null)
+  const [explainResult, setExplainResult] = useState(null)
 
-  const handleChange = (e) => {
+  // Batch Prediction State
+  const [batchFile, setBatchFile] = useState(null)
+  const [batchLoading, setBatchLoading] = useState(false)
+  const [batchResults, setBatchResults] = useState(null)
+  const [batchError, setBatchError] = useState(null)
+  const fileInputRef = useRef(null)
+
+  const handleFeatureChange = (e) => {
     const { name, value } = e.target
     setFeatures(prev => ({ ...prev, [name]: value }))
   }
@@ -34,22 +47,21 @@ function App() {
     else setFeatures(mockBenign)
   }
 
-  const handleSubmit = async (e) => {
+  const handleLiveSubmit = async (e) => {
     e.preventDefault()
-    setLoading(true)
-    setError(null)
-    setResult(null)
+    setLiveLoading(true)
+    setLiveError(null)
+    setLiveResult(null)
+    setExplainResult(null)
 
     try {
-      // Convert all to floats
       const payload = {}
       for (const key in features) {
         payload[key] = parseFloat(features[key])
         if (isNaN(payload[key])) throw new Error(`Invalid value for ${key.replace('_', ' ')}`)
       }
 
-      // We use localhost:8000 for local dev
-      const response = await fetch('http://localhost:8000/predict', {
+      const response = await fetch(`${API_URL}/predict`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -61,11 +73,53 @@ function App() {
       }
 
       const data = await response.json()
-      setResult(data)
+      setLiveResult(data)
+      
+      // Also fetch explainability
+      fetch(`${API_URL}/explain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(res => res.json()).then(expData => {
+        if(expData.feature_importance) {
+          setExplainResult(expData.feature_importance)
+        }
+      }).catch(err => console.error("Explain error", err))
+
     } catch (err) {
-      setError(err.message)
+      setLiveError(err.message)
     } finally {
-      setLoading(false)
+      setLiveLoading(false)
+    }
+  }
+
+  const handleBatchSubmit = async (e) => {
+    e.preventDefault()
+    if (!batchFile) return
+    setBatchLoading(true)
+    setBatchError(null)
+    setBatchResults(null)
+
+    const formData = new FormData()
+    formData.append("file", batchFile)
+
+    try {
+      const response = await fetch(`${API_URL}/batch-predict`, {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.detail || 'Batch prediction failed')
+      }
+
+      const data = await response.json()
+      setBatchResults(data.batch_results)
+    } catch (err) {
+      setBatchError(err.message)
+    } finally {
+      setBatchLoading(false)
     }
   }
 
@@ -76,95 +130,185 @@ function App() {
         <p>Advanced SVM-based Breast Cancer Classification</p>
       </header>
 
-      <main className="main-content">
-        <section className="glass-panel form-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 600 }}>Tumor Features</h2>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button type="button" className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={() => handleRandomSample('benign')}>Load Benign</button>
-              <button type="button" className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={() => handleRandomSample('malignant')}>Load Malignant</button>
-            </div>
-          </div>
-          
-          <form onSubmit={handleSubmit}>
-            <div className="form-grid">
-              {Object.keys(features).map(key => (
-                <div className="input-group" key={key}>
-                  <label htmlFor={key}>{key.replace(/_/g, ' ')}</label>
-                  <input
-                    type="number"
-                    step="any"
-                    id={key}
-                    name={key}
-                    value={features[key]}
-                    onChange={handleChange}
-                    required
-                  />
-                </div>
-              ))}
-            </div>
+      <div className="tabs-container">
+        <div className="tab-list">
+          <button className={`tab-btn ${activeTab === 'live' ? 'active' : ''}`} onClick={() => setActiveTab('live')}>Live Prediction</button>
+          <button className={`tab-btn ${activeTab === 'batch' ? 'active' : ''}`} onClick={() => setActiveTab('batch')}>Batch Prediction</button>
+          <button className={`tab-btn ${activeTab === 'analytics' ? 'active' : ''}`} onClick={() => setActiveTab('analytics')}>Analytics</button>
+        </div>
 
-            <div className="actions">
-              <button 
-                type="button" 
-                className="btn btn-secondary" 
-                onClick={() => setFeatures(initialFeatures)}
-                disabled={loading}
-              >
-                Clear
-              </button>
-              <button type="submit" className="btn btn-primary" disabled={loading}>
-                {loading ? <span className="spinner"></span> : 'Run Prediction'}
-              </button>
-            </div>
-          </form>
-          {error && <div style={{ color: 'var(--danger-color)', marginTop: '1rem', padding: '1rem', background: 'rgba(239,68,68,0.1)', borderRadius: '8px' }}>{error}</div>}
-        </section>
-
-        <section className="glass-panel result-panel">
-          {!result ? (
-            <div className="result-placeholder">
-              <div className="icon-placeholder">🔬</div>
-              <h3>Awaiting Data</h3>
-              <p style={{ textAlign: 'center' }}>Enter tumor features or load a sample to see the AI prediction.</p>
-            </div>
-          ) : (
-            <div className="prediction-result">
-              <h2 style={{ fontSize: '1.25rem', color: 'var(--text-muted)', marginBottom: '1rem', textAlign: 'center' }}>AI Diagnosis</h2>
-              <div style={{ textAlign: 'center' }}>
-                <div className={`status-badge ${result.prediction === 'Malignant' ? 'status-malignant' : 'status-benign'}`}>
-                  {result.prediction}
+        {activeTab === 'live' && (
+          <main className="main-content">
+            <section className="glass-panel form-panel">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: 600 }}>Tumor Features</h2>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button type="button" className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={() => handleRandomSample('benign')}>Load Benign</button>
+                  <button type="button" className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={() => handleRandomSample('malignant')}>Load Malignant</button>
                 </div>
               </div>
               
-              <div style={{ marginTop: '2rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Confidence</span>
-                  <span className="confidence-text">{result.confidence}</span>
+              <form onSubmit={handleLiveSubmit}>
+                <div className="form-grid">
+                  {Object.keys(features).map(key => (
+                    <div className="input-group" key={key}>
+                      <label htmlFor={key}>{key.replace(/_/g, ' ')}</label>
+                      <input
+                        type="number"
+                        step="any"
+                        id={key}
+                        name={key}
+                        value={features[key]}
+                        onChange={handleFeatureChange}
+                        required
+                      />
+                    </div>
+                  ))}
                 </div>
-                
-                <div className="confidence-bar-container">
-                  <div 
-                    className={`confidence-bar ${result.prediction === 'Malignant' ? 'bar-malignant' : 'bar-benign'}`}
-                    style={{ width: result.confidence }}
-                  ></div>
-                </div>
-              </div>
 
-              <div className="prob-details">
-                <div className="prob-item">
-                  <span className="prob-label">Benign Prob.</span>
-                  <span className="prob-value" style={{ color: 'var(--success-color)' }}>{result.probabilities.Benign}</span>
+                <div className="actions">
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    onClick={() => setFeatures(initialFeatures)}
+                    disabled={liveLoading}
+                  >
+                    Clear
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={liveLoading}>
+                    {liveLoading ? <span className="spinner"></span> : 'Run Prediction'}
+                  </button>
                 </div>
-                <div className="prob-item" style={{ textAlign: 'right' }}>
-                  <span className="prob-label">Malignant Prob.</span>
-                  <span className="prob-value" style={{ color: 'var(--danger-color)' }}>{result.probabilities.Malignant}</span>
+              </form>
+              {liveError && <div style={{ color: 'var(--danger-color)', marginTop: '1rem', padding: '1rem', background: 'rgba(239,68,68,0.1)', borderRadius: '8px' }}>{liveError}</div>}
+            </section>
+
+            <section className="glass-panel result-panel">
+              {!liveResult ? (
+                <div className="result-placeholder">
+                  <div className="icon-placeholder">🔬</div>
+                  <h3>Awaiting Data</h3>
+                  <p style={{ textAlign: 'center' }}>Enter tumor features or load a sample to see the AI prediction.</p>
                 </div>
+              ) : (
+                <div className="prediction-result" style={{width: '100%'}}>
+                  <h2 style={{ fontSize: '1.25rem', color: 'var(--text-muted)', marginBottom: '1rem', textAlign: 'center' }}>AI Diagnosis</h2>
+                  <div style={{ textAlign: 'center' }}>
+                    <div className={`status-badge ${liveResult.prediction === 'Malignant' ? 'status-malignant' : 'status-benign'}`}>
+                      {liveResult.prediction}
+                    </div>
+                  </div>
+                  
+                  <div style={{ marginTop: '2rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Confidence</span>
+                      <span className="confidence-text">{liveResult.confidence}</span>
+                    </div>
+                    
+                    <div className="confidence-bar-container">
+                      <div 
+                        className={`confidence-bar ${liveResult.prediction === 'Malignant' ? 'bar-malignant' : 'bar-benign'}`}
+                        style={{ width: liveResult.confidence }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div className="prob-details">
+                    <div className="prob-item">
+                      <span className="prob-label">Benign Prob.</span>
+                      <span className="prob-value" style={{ color: 'var(--success-color)' }}>{liveResult.probabilities.Benign}</span>
+                    </div>
+                    <div className="prob-item" style={{ textAlign: 'right' }}>
+                      <span className="prob-label">Malignant Prob.</span>
+                      <span className="prob-value" style={{ color: 'var(--danger-color)' }}>{liveResult.probabilities.Malignant}</span>
+                    </div>
+                  </div>
+                  
+                  {explainResult && (
+                    <div style={{marginTop: '2rem', textAlign: 'left', width: '100%'}}>
+                      <h3 style={{fontSize: '1.1rem', marginBottom: '1rem', color: 'var(--primary-color)'}}>Top Contributing Features</h3>
+                      {Object.entries(explainResult).slice(0, 5).map(([feature, val]) => (
+                        <div key={feature} style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.9rem'}}>
+                          <span style={{textTransform: 'capitalize'}}>{feature.replace(/_/g, ' ')}</span>
+                          <span style={{color: val > 0 ? 'var(--danger-color)' : 'var(--success-color)'}}>
+                            {val > 0 ? '↑' : '↓'} {Math.abs(val).toFixed(4)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          </main>
+        )}
+
+        {activeTab === 'batch' && (
+          <div className="glass-panel" style={{maxWidth: '800px', margin: '0 auto'}}>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1rem' }}>Batch Prediction</h2>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>Upload a CSV file containing multiple tumor records. The file must contain the same 30 features as the training dataset.</p>
+            
+            <form onSubmit={handleBatchSubmit} style={{display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '2rem'}}>
+              <input 
+                type="file" 
+                accept=".csv" 
+                onChange={(e) => setBatchFile(e.target.files[0])}
+                ref={fileInputRef}
+                style={{padding: '0.5rem', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--glass-border)', borderRadius: '8px', flexGrow: 1}}
+              />
+              <button type="submit" className="btn btn-primary" disabled={batchLoading || !batchFile}>
+                {batchLoading ? <span className="spinner"></span> : 'Predict Batch'}
+              </button>
+            </form>
+            
+            {batchError && <div style={{ color: 'var(--danger-color)', marginBottom: '1rem', padding: '1rem', background: 'rgba(239,68,68,0.1)', borderRadius: '8px' }}>{batchError}</div>}
+            
+            {batchResults && (
+              <div style={{overflowX: 'auto'}}>
+                <h3 style={{marginBottom: '1rem'}}>Results ({batchResults.length} records)</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Row Index</th>
+                      <th>Prediction</th>
+                      <th>Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchResults.map((row) => (
+                      <tr key={row.index}>
+                        <td>{row.index}</td>
+                        <td>
+                           <span className={row.prediction === 'Malignant' ? 'status-malignant' : 'status-benign'} style={{padding: '0.2rem 0.6rem', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 'bold'}}>
+                             {row.prediction}
+                           </span>
+                        </td>
+                        <td>{row.confidence}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'analytics' && (
+          <div className="metrics-container">
+            <div className="metric-card">
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1rem' }}>Model Confusion Matrix</h2>
+              <p style={{ color: 'var(--text-muted)' }}>Displays the true positives, false positives, true negatives, and false negatives from the best SVM model.</p>
+              <img src={`${API_URL}/metrics/confusion-matrix`} alt="Confusion Matrix" onError={(e) => { e.target.onerror = null; e.target.src = ''; e.target.alt = 'Image not available. Did you train the model?'; }} />
             </div>
-          )}
-        </section>
-      </main>
+            
+            <div className="metric-card">
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1rem' }}>PCA Decision Boundary</h2>
+              <p style={{ color: 'var(--text-muted)' }}>Visualization of the SVM decision boundary reduced to 2 principal components.</p>
+              <img src={`${API_URL}/metrics/pca-plot`} alt="PCA Plot" onError={(e) => { e.target.onerror = null; e.target.src = ''; e.target.alt = 'Image not available. Did you train the model?'; }} />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
