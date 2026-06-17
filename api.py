@@ -1,9 +1,13 @@
-from fastapi import FastAPI, HTTPException
+import io
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import pandas as pd
 import numpy as np
+import shap
+from sklearn.ensemble import RandomForestClassifier
 
 app = FastAPI(title="Breast Cancer SVM Prediction API", 
               description="A REST API to predict whether a breast tumor is benign or malignant using a trained SVM model.",
@@ -24,6 +28,20 @@ try:
 except Exception as e:
     model = None
     print(f"Warning: Could not load model. Error: {e}")
+
+# Load data and initialize SHAP explainer
+try:
+    df = pd.read_csv('breast-cancer.csv')
+    df.drop(columns=['id'], inplace=True, errors='ignore')
+    df['diagnosis'] = df['diagnosis'].map({'M': 1, 'B': 0})
+    X = df.drop('diagnosis', axis=1)
+    y = df['diagnosis']
+    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf_model.fit(X, y)
+    explainer = shap.TreeExplainer(rf_model)
+except Exception as e:
+    explainer = None
+    print(f"Warning: Could not initialize SHAP explainer. Error: {e}")
 
 # Define the expected input payload using Pydantic
 class TumorFeatures(BaseModel):
@@ -88,3 +106,65 @@ def predict(features: TumorFeatures):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
+
+@app.post("/batch-predict")
+async def batch_predict(file: UploadFile = File(...)):
+    if model is None:
+        raise HTTPException(status_code=500, detail="Model is not loaded.")
+    
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported.")
+        
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+        
+        df_features = df.drop(columns=['id', 'diagnosis'], errors='ignore')
+        
+        predictions = model.predict(df_features)
+        probabilities = model.predict_proba(df_features)
+        
+        results = []
+        for i, pred in enumerate(predictions):
+            results.append({
+                "index": i,
+                "prediction": "Malignant" if pred == 1 else "Benign",
+                "confidence": f"{float(probabilities[i][pred]) * 100:.2f}%"
+            })
+            
+        return {"batch_results": results}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Batch prediction error: {str(e)}")
+
+@app.get("/metrics/confusion-matrix")
+def get_confusion_matrix():
+    import os
+    if os.path.exists("confusion_matrix.png"):
+        return FileResponse("confusion_matrix.png", media_type="image/png")
+    raise HTTPException(status_code=404, detail="Confusion matrix not found")
+
+@app.get("/metrics/pca-plot")
+def get_pca_plot():
+    import os
+    if os.path.exists("svm_rbf_pca.png"):
+        return FileResponse("svm_rbf_pca.png", media_type="image/png")
+    raise HTTPException(status_code=404, detail="PCA plot not found")
+
+@app.post("/explain")
+def explain(features: TumorFeatures):
+    if explainer is None:
+        raise HTTPException(status_code=500, detail="Explainer is not loaded.")
+    
+    data = pd.DataFrame([features.dict()])
+    shap_values = explainer.shap_values(data)
+    
+    if isinstance(shap_values, list):
+        instance_shap = shap_values[1][0] 
+    else:
+        instance_shap = shap_values[0]
+        
+    importance = {feature: float(val) for feature, val in zip(data.columns, instance_shap)}
+    sorted_importance = dict(sorted(importance.items(), key=lambda item: abs(item[1]), reverse=True))
+    
+    return {"feature_importance": sorted_importance}
+
