@@ -1,5 +1,5 @@
 import io
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,10 +8,47 @@ import pandas as pd
 import numpy as np
 import shap
 from sklearn.ensemble import RandomForestClassifier
+from contextlib import asynccontextmanager
+from sqlalchemy.orm import Session
+import models
+from database import engine, get_db
+
+models.Base.metadata.create_all(bind=engine)
+
+# Global dictionary to store models
+ml_models = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the ML model
+    try:
+        ml_models["model"] = joblib.load('best_svm_model.pkl')
+    except Exception as e:
+        ml_models["model"] = None
+        print(f"Warning: Could not load model. Error: {e}")
+        
+    # Load SHAP explainer
+    try:
+        df = pd.read_csv('breast-cancer.csv')
+        df.drop(columns=['id'], inplace=True, errors='ignore')
+        df['diagnosis'] = df['diagnosis'].map({'M': 1, 'B': 0})
+        X = df.drop('diagnosis', axis=1)
+        y = df['diagnosis']
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf_model.fit(X, y)
+        ml_models["explainer"] = shap.TreeExplainer(rf_model)
+    except Exception as e:
+        ml_models["explainer"] = None
+        print(f"Warning: Could not initialize SHAP explainer. Error: {e}")
+        
+    yield
+    # Clean up
+    ml_models.clear()
 
 app = FastAPI(title="Breast Cancer SVM Prediction API", 
               description="A REST API to predict whether a breast tumor is benign or malignant using a trained SVM model.",
-              version="1.0.0")
+              version="1.0.0",
+              lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,27 +58,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Load the trained model
-try:
-    model = joblib.load('best_svm_model.pkl')
-except Exception as e:
-    model = None
-    print(f"Warning: Could not load model. Error: {e}")
-
-# Load data and initialize SHAP explainer
-try:
-    df = pd.read_csv('breast-cancer.csv')
-    df.drop(columns=['id'], inplace=True, errors='ignore')
-    df['diagnosis'] = df['diagnosis'].map({'M': 1, 'B': 0})
-    X = df.drop('diagnosis', axis=1)
-    y = df['diagnosis']
-    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-    rf_model.fit(X, y)
-    explainer = shap.TreeExplainer(rf_model)
-except Exception as e:
-    explainer = None
-    print(f"Warning: Could not initialize SHAP explainer. Error: {e}")
 
 # Define the expected input payload using Pydantic
 class TumorFeatures(BaseModel):
@@ -81,11 +97,12 @@ def read_root():
     return {"message": "Welcome to the Breast Cancer Prediction API. Use the /predict endpoint to get predictions."}
 
 @app.post("/predict")
-def predict(features: TumorFeatures):
+def predict(features: TumorFeatures, db: Session = Depends(get_db)):
+    model = ml_models.get("model")
     if model is None:
         raise HTTPException(status_code=500, detail="Model is not loaded. Please train the model first.")
     
-    # Convert input to DataFrame (as the pipeline expects column names, though numpy array also works for just standard scaler usually)
+    # Convert input to DataFrame
     data = pd.DataFrame([features.dict()])
     
     try:
@@ -95,6 +112,28 @@ def predict(features: TumorFeatures):
         
         result = "Malignant" if prediction == 1 else "Benign"
         confidence = probabilities[prediction]
+        
+        # Calculate shap values for saving top features
+        explainer = ml_models.get("explainer")
+        top_features = []
+        if explainer:
+            shap_values = explainer.shap_values(data)
+            instance_shap = shap_values[1][0] if isinstance(shap_values, list) else shap_values[0]
+            importance = {feature: float(val) for feature, val in zip(data.columns, instance_shap)}
+            sorted_importance = sorted(importance.items(), key=lambda item: abs(item[1]), reverse=True)
+            top_features = sorted_importance[:2]
+        
+        # Log to DB
+        db_record = models.PredictionRecord(
+            prediction=result,
+            confidence=float(confidence),
+            top_feature_1_name=top_features[0][0] if len(top_features) > 0 else None,
+            top_feature_1_val=top_features[0][1] if len(top_features) > 0 else None,
+            top_feature_2_name=top_features[1][0] if len(top_features) > 1 else None,
+            top_feature_2_val=top_features[1][1] if len(top_features) > 1 else None,
+        )
+        db.add(db_record)
+        db.commit()
         
         return {
             "prediction": result,
@@ -109,6 +148,7 @@ def predict(features: TumorFeatures):
 
 @app.post("/batch-predict")
 async def batch_predict(file: UploadFile = File(...)):
+    model = ml_models.get("model")
     if model is None:
         raise HTTPException(status_code=500, detail="Model is not loaded.")
     
@@ -152,6 +192,7 @@ def get_pca_plot():
 
 @app.post("/explain")
 def explain(features: TumorFeatures):
+    explainer = ml_models.get("explainer")
     if explainer is None:
         raise HTTPException(status_code=500, detail="Explainer is not loaded.")
     
@@ -168,3 +209,7 @@ def explain(features: TumorFeatures):
     
     return {"feature_importance": sorted_importance}
 
+@app.get("/history")
+def get_history(db: Session = Depends(get_db)):
+    records = db.query(models.PredictionRecord).order_by(models.PredictionRecord.timestamp.desc()).limit(100).all()
+    return records
