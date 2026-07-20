@@ -13,3 +13,4 @@ pytest
 httpx
 mlflow
 python-multipart
+sqlalchemy
