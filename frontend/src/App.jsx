@@ -1,4 +1,5 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 
 const API_URL = 'http://localhost:8000'
 
@@ -29,6 +30,31 @@ function App() {
   const [liveResult, setLiveResult] = useState(null)
   const [liveError, setLiveError] = useState(null)
   const [explainResult, setExplainResult] = useState(null)
+
+  // History State
+  const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const fetchHistory = async () => {
+    setHistoryLoading(true)
+    try {
+      const response = await fetch(`${API_URL}/history`)
+      if (response.ok) {
+        const data = await response.json()
+        setHistory(data)
+      }
+    } catch (err) {
+      console.error("Failed to fetch history", err)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'history') {
+      fetchHistory()
+    }
+  }, [activeTab])
 
   // Batch Prediction State
   const [batchFile, setBatchFile] = useState(null)
@@ -135,10 +161,16 @@ function App() {
           <button className={`tab-btn ${activeTab === 'live' ? 'active' : ''}`} onClick={() => setActiveTab('live')}>Live Prediction</button>
           <button className={`tab-btn ${activeTab === 'batch' ? 'active' : ''}`} onClick={() => setActiveTab('batch')}>Batch Prediction</button>
           <button className={`tab-btn ${activeTab === 'analytics' ? 'active' : ''}`} onClick={() => setActiveTab('analytics')}>Analytics</button>
+          <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
         </div>
 
         {activeTab === 'live' && (
-          <main className="main-content">
+          <motion.main 
+            className="main-content"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
             <section className="glass-panel form-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                 <h2 style={{ fontSize: '1.5rem', fontWeight: 600 }}>Tumor Features</h2>
@@ -240,11 +272,17 @@ function App() {
                 </div>
               )}
             </section>
-          </main>
+          </motion.main>
         )}
 
         {activeTab === 'batch' && (
-          <div className="glass-panel" style={{maxWidth: '800px', margin: '0 auto'}}>
+          <motion.div 
+            className="glass-panel" 
+            style={{maxWidth: '800px', margin: '0 auto'}}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
             <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1rem' }}>Batch Prediction</h2>
             <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>Upload a CSV file containing multiple tumor records. The file must contain the same 30 features as the training dataset.</p>
             
@@ -294,7 +332,12 @@ function App() {
         )}
 
         {activeTab === 'analytics' && (
-          <div className="metrics-container">
+          <motion.div 
+            className="metrics-container"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
             <div className="metric-card">
               <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '1rem' }}>Model Confusion Matrix</h2>
               <p style={{ color: 'var(--text-muted)' }}>Displays the true positives, false positives, true negatives, and false negatives from the best SVM model.</p>
@@ -307,6 +350,58 @@ function App() {
               <img src={`${API_URL}/metrics/pca-plot`} alt="PCA Plot" onError={(e) => { e.target.onerror = null; e.target.src = ''; e.target.alt = 'Image not available. Did you train the model?'; }} />
             </div>
           </div>
+        )}
+
+        {activeTab === 'history' && (
+          <motion.div 
+            className="glass-panel" 
+            style={{maxWidth: '800px', margin: '0 auto'}}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 600 }}>Prediction History</h2>
+              <button onClick={fetchHistory} className="btn btn-secondary" style={{padding: '0.5rem 1rem', fontSize: '0.85rem'}}>Refresh</button>
+            </div>
+            
+            {historyLoading ? (
+              <div style={{textAlign: 'center', padding: '2rem'}}><span className="spinner"></span></div>
+            ) : history.length === 0 ? (
+              <p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No predictions recorded yet. Run a live prediction first!</p>
+            ) : (
+              <div style={{overflowX: 'auto'}}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Prediction</th>
+                      <th>Confidence</th>
+                      <th>Top Feature</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.map((record) => (
+                      <tr key={record.id}>
+                        <td style={{fontSize: '0.85rem', color: 'var(--text-muted)'}}>{new Date(record.timestamp + 'Z').toLocaleString()}</td>
+                        <td>
+                           <span className={record.prediction === 'Malignant' ? 'status-malignant' : 'status-benign'} style={{padding: '0.2rem 0.6rem', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 'bold'}}>
+                             {record.prediction}
+                           </span>
+                        </td>
+                        <td>{(record.confidence * 100).toFixed(2)}%</td>
+                        <td style={{fontSize: '0.85rem'}}>
+                          {record.top_feature_1_name ? (
+                            <span style={{textTransform: 'capitalize'}}>{record.top_feature_1_name.replace(/_/g, ' ')} ({record.top_feature_1_val > 0 ? '+' : '-'})</span>
+                          ) : '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </motion.div>
         )}
       </div>
     </div>
